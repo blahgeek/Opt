@@ -74,7 +74,7 @@ function util.isvectortype(t) return Vectors[t] end
 util.Vector = terralib.memoize(function(typ,N)
     N = assert(tonumber(N),"expected a number")
     local ops = { "__sub","__add","__mul","__div" }
-    local struct VecType { 
+    local struct VecType {
         data : typ[N]
     }
     Vectors[VecType] = true
@@ -94,7 +94,7 @@ util.Vector = terralib.memoize(function(typ,N)
         local terra opvv(a : VecType, b : VecType) [template(`a.data[i],`b.data[i])]  end
         local terra opsv(a : typ, b : VecType) [template(`a,`b.data[i])]  end
         local terra opvs(a : VecType, b : typ) [template(`a.data[i],`b)]  end
-        
+
         local doop
         if terralib.overloadedfunction then
             doop = terralib.overloadedfunction("doop",{opvv,opsv,opvs})
@@ -103,7 +103,7 @@ util.Vector = terralib.memoize(function(typ,N)
             doop:adddefinition(opsv:getdefinitions()[1])
             doop:adddefinition(opvs:getdefinitions()[1])
         end
-        
+
        VecType.metamethods[op] = doop
     end
     terra VecType.metamethods.__unm(self : VecType)
@@ -211,15 +211,15 @@ function Array(T,debug)
         end
     end
     terra Array:size() return self._size end
-    
+
     terra Array:get(i : int32)
-        assert(i < self._size) 
+        assert(i < self._size)
         return &self._data[i]
     end
     Array.metamethods.__apply = macro(function(self,idx)
         return `@self:get(idx)
     end)
-    
+
     terra Array:insertNatlocation(idx : int32, N : int32, v : T) : {}
         assert(idx <= self._size)
         self._size = self._size + N
@@ -265,7 +265,7 @@ function Array(T,debug)
             return self:indexof(v) >= 0
         end
     end
-	
+
     return Array
 end
 
@@ -301,7 +301,7 @@ struct util.Timer {
 }
 local Timer = util.Timer
 
-terra Timer:init() 
+terra Timer:init()
 	self.timingInfo = [Array(TimingInfo)].alloc():init()
 end
 
@@ -312,7 +312,7 @@ terra Timer:cleanup()
         C.cudaEventDestroy(eventInfo.endEvent);
     end
 	self.timingInfo:delete()
-end 
+end
 
 
 terra Timer:startEvent(name : rawstring,  stream : C.cudaStream_t, endEvent : &C.cudaEvent_t)
@@ -392,7 +392,7 @@ terra Timer:evaluate()
         end
         C.printf("Per-iter times ms (nonlinear,linear): %7.4f\t%7.4f\n", linAggregate, nonLinAggregate)
 	end
-    
+
 end
 
 
@@ -406,7 +406,7 @@ util.laneid = laneid
 __syncthreads = cudalib.nvvm_barrier0
 
 
-local __shfl_down 
+local __shfl_down
 
 if opt_float == float then
 
@@ -470,8 +470,8 @@ else
 
             repeat
                 assumed = old;
-                old = terralib.asm(uint64,"atom.global.cas.b64 $0,[$1],$2,$3;", 
-                    "=l,l,l,l", true, address_as_i, assumed, 
+                old = terralib.asm(uint64,"atom.global.cas.b64 $0,[$1],$2,$3;",
+                    "=l,l,l,l", true, address_as_i, assumed,
                     __double_as_ull( value + __ull_as_double(assumed) )
                     );
             until assumed == old;
@@ -494,10 +494,10 @@ else
 end
 
 -- Using the "Kepler Shuffle", see http://devblogs.nvidia.com/parallelforall/faster-parallel-reductions-kepler/
-local terra warpReduce(val : opt_float) 
+local terra warpReduce(val : opt_float)
 
   var offset = warpSize >> 1
-  while offset > 0 do 
+  while offset > 0 do
     val = val + __shfl_down(val, offset, warpSize);
     offset =  offset >> 1
   end
@@ -595,7 +595,7 @@ util.getValidUnknown = macro(function(pd,pw,ph)
 	return quote
 		@pw,@ph = blockDim.x * blockIdx.x + threadIdx.x, blockDim.y * blockIdx.y + threadIdx.y
 	in
-		 @pw < pd.parameters.X:W() and @ph < pd.parameters.X:H() 
+		 @pw < pd.parameters.X:W() and @ph < pd.parameters.X:H()
 	end
 end)
 util.getValidGraphElement = macro(function(pd,graphname,idx)
@@ -603,19 +603,19 @@ util.getValidGraphElement = macro(function(pd,graphname,idx)
 	return quote
 		@idx = blockDim.x * blockIdx.x + threadIdx.x
 	in
-		 @idx < pd.parameters.[graphname].N 
+		 @idx < pd.parameters.[graphname].N
 	end
 end)
 
 local positionForValidLane = util.positionForValidLane
 
-local cd = macro(function(apicall) 
+local cd = macro(function(apicall)
     local apicallstr = tostring(apicall)
     local filename = debug.getinfo(1,'S').source
     return quote
         var str = [apicallstr]
         var r = apicall
-        if r ~= 0 then  
+        if r ~= 0 then
             C.printf("Cuda reported error %d: %s\n",r, C.cudaGetErrorString(r))
             C.printf("In call: %s", str)
             C.printf("In file: %s\n", filename)
@@ -632,7 +632,7 @@ local checkedLaunch = macro(function(kernelName, apicall)
     return quote
         var name = [kernelName]
         var r = apicall
-        if r ~= 0 then  
+        if r ~= 0 then
             C.printf("Kernel %s, Cuda reported error %d: %s\n", name, r, C.cudaGetErrorString(r))
             C.exit(r)
         end
@@ -640,7 +640,7 @@ local checkedLaunch = macro(function(kernelName, apicall)
         r
     end end)
 
-local GRID_SIZES = { {256,1,1}, {16,16,1}, {8,8,4} }
+local GRID_SIZES = { {64,1,1}, {16,16,1}, {8,8,4} }
 
 
 local function makeGPULauncher(PlanData,kernelName,ft,compiledKernel)
@@ -662,23 +662,23 @@ local function makeGPULauncher(PlanData,kernelName,ft,compiledKernel)
             end
             return exps
         else
-            return {`pd.parameters.[ft.graphname].N,256,1,1,1,1}
+            return {`pd.parameters.[ft.graphname].N,64,1,1,1,1}
         end
     end
     local terra GPULauncher(pd : &PlanData, [params])
         var xdim,xblock,ydim,yblock,zdim,zblock = [ createLaunchParameters(pd) ]
-            
-        var launch = terralib.CUDAParams { (xdim - 1) / xblock + 1, (ydim - 1) / yblock + 1, (zdim - 1) / zblock + 1, 
-                                            xblock, yblock, zblock, 
+
+        var launch = terralib.CUDAParams { (xdim - 1) / xblock + 1, (ydim - 1) / yblock + 1, (zdim - 1) / zblock + 1,
+                                            xblock, yblock, zblock,
                                             0, nil }
         var stream : C.cudaStream_t = nil
-        var endEvent : C.cudaEvent_t 
+        var endEvent : C.cudaEvent_t
         if ([_opt_collect_kernel_timing]) then
             pd.timer:startEvent(kernelName,nil,&endEvent)
         end
 
         checkedLaunch(kernelName, compiledKernel(&launch, @pd, params))
-        
+
         if ([_opt_collect_kernel_timing]) then
             pd.timer:endEvent(nil,endEvent)
         end
@@ -695,7 +695,7 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
     local function getkname(name,ft)
         return string.format("%s_%s_%s",name,tostring(ft),key)
     end
-    
+
     for _,problemfunction in ipairs(problemSpec.functions) do
         if problemfunction.typ.kind == "CenteredFunction" then
            local ispace = problemfunction.typ.ispace
@@ -708,14 +708,14 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
         else
             local graphname = problemfunction.typ.graphname
             local ks = delegate.GraphFunctions(graphname,problemfunction.functionmap)
-            for name,func in pairs(ks) do            
+            for name,func in pairs(ks) do
                 kernelFunctions[getkname(name,problemfunction.typ)] = { kernel = func , annotations = { {"maxntidx", 256}, {"minctasm",1} } }
             end
         end
     end
-    
-    local kernels = terralib.cudacompile(kernelFunctions, false)
-    
+
+    local kernels,loader = terralib.cudacompile(kernelFunctions, false)
+
     -- step 2: generate wrapper functions around each named thing
     local grouplaunchers = {}
     for _,name in ipairs(names) do
@@ -724,7 +724,7 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
         for _,problemfunction in ipairs(problemSpec.functions) do
             local kname = getkname(name,problemfunction.typ)
             local kernel = kernels[kname]
-            if kernel then -- some domains do not have an associated kernel, (see _Finish kernels in GN which are only defined for 
+            if kernel then -- some domains do not have an associated kernel, (see _Finish kernels in GN which are only defined for
                 local launcher = makeGPULauncher(PlanData, name, problemfunction.typ, kernel)
                 if not args then
                     args = launcher:gettype().parameters:map(symbol)
@@ -742,9 +742,9 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
             fn:setname(name)
             fn:gettype()
         end
-        grouplaunchers[name] = fn 
+        grouplaunchers[name] = fn
     end
-    return grouplaunchers
+    return grouplaunchers, loader
 end
 
 return util

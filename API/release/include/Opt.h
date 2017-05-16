@@ -5,11 +5,11 @@ typedef struct Opt_Plan 	Opt_Plan;
 typedef struct Opt_Problem 	Opt_Problem;
 
 // Parameters that are set once per initialization of Opt
-// A zeroed-out version of this struct is a good default 
+// A zeroed-out version of this struct is a good default
 // for maximum speed on well-behaved problems
 struct Opt_InitializationParameters {
 	// If true (nonzero), all intermediate values and unknowns, are double-precision
-	// On platforms without double-precision float atomics, this 
+	// On platforms without double-precision float atomics, this
 	// can be a drastic drag of performance.
 	int doublePrecision;
 
@@ -27,7 +27,7 @@ typedef struct Opt_InitializationParameters 	Opt_InitializationParameters;
 Opt_State* Opt_NewState(Opt_InitializationParameters params);
 
 // load the problem specification including the energy function from 'filename' and
-// initializer a solver of type 'solverkind' (currently only 'solverGaussNewtonGPU' 
+// initializer a solver of type 'solverkind' (currently only 'solverGaussNewtonGPU'
 // and 'LMGPU' are supported)
 Opt_Problem* Opt_ProblemDefine(Opt_State* state, const char* filename, const char* solverkind);
 void Opt_ProblemDelete(Opt_State* state, Opt_Problem* problem);
@@ -35,14 +35,14 @@ void Opt_ProblemDelete(Opt_State* state, Opt_Problem* problem);
 
 // Allocate intermediate arrays necessary to run 'problem' on the dimensions listed in 'dimensions'
 // how the dimensions are used is based on the problem specification (see 'writing problem specifications')
-Opt_Plan* Opt_ProblemPlan(Opt_State* state, Opt_Problem* problem, unsigned int* dimensions);
+Opt_Plan* Opt_ProblemPlan(Opt_State* state, Opt_Problem* problem, unsigned int* dimensions, const char * saveobj);
 void Opt_PlanFree(Opt_State * state, Opt_Plan* plan);
 
 // Set a solver-specific variable by name. For now, these values are "locked-in" after ProblemInit()
 // Consult the solver-specific documentation for valid values and names
 void Opt_SetSolverParameter(Opt_State* state, Opt_Plan* plan, const char* name, void* value);
 
-// Run the solver until completion using the plan 'plan'. 'problemparams' are the problem-specific inputs 
+// Run the solver until completion using the plan 'plan'. 'problemparams' are the problem-specific inputs
 // and outputs that define the problem, including images, graphs, and problem paramaters
 // (see 'writing problem specifications').
 void Opt_ProblemSolve(Opt_State* state, Opt_Plan* plan, void** problemparams);
