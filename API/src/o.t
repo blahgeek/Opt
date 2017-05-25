@@ -605,7 +605,7 @@ function ImageType:terratype()
 	terra Image:initGPU()
         var data : &uint8
         cd(C.cudaMalloc([&&opaque](&data), self:totalbytes()))
-        cd(C.cudaMemset([&opaque](data), 0, self:totalbytes()))
+        cd(C.cudaMemset_ptds([&opaque](data), 0, self:totalbytes()))
         self:initFromGPUptr(data)
     end
     return Image

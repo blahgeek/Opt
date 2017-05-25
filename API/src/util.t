@@ -4,11 +4,15 @@ require("precision")
 local util = {}
 
 util.C = terralib.includecstring [[
+
+#define CUDA_API_PER_THREAD_DEFAULT_STREAM 1
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
 #include <cuda_runtime.h>
+#include <cuda.h>
 #ifdef _WIN32
 	#include <io.h>
 #endif
@@ -320,12 +324,12 @@ terra Timer:startEvent(name : rawstring,  stream : C.cudaStream_t, endEvent : &C
     timingInfo.eventName = name
     C.cudaEventCreate(&timingInfo.startEvent)
     C.cudaEventCreate(&timingInfo.endEvent)
-    C.cudaEventRecord(timingInfo.startEvent, stream)
+    C.cudaEventRecord_ptsz(timingInfo.startEvent, stream)
     self.timingInfo:insert(timingInfo)
     @endEvent = timingInfo.endEvent
 end
 terra Timer:endEvent(stream : C.cudaStream_t, endEvent : C.cudaEvent_t)
-    C.cudaEventRecord(endEvent, stream)
+    C.cudaEventRecord_ptsz(endEvent, stream)
 end
 
 terra isprefix(pre : rawstring, str : rawstring) : bool
@@ -670,7 +674,7 @@ local function makeGPULauncher(PlanData,kernelName,ft,compiledKernel)
 
         var launch = terralib.CUDAParams { (xdim - 1) / xblock + 1, (ydim - 1) / yblock + 1, (zdim - 1) / zblock + 1,
                                             xblock, yblock, zblock,
-                                            0, nil }
+                                            0, [&opaque](0x2) }
         var stream : C.cudaStream_t = nil
         var endEvent : C.cudaEvent_t
         if ([_opt_collect_kernel_timing]) then

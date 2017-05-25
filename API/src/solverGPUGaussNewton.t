@@ -768,20 +768,20 @@ return function(problemSpec)
                                                                         })
 
     local terra computeCost(pd : &PlanData) : opt_float
-        C.cudaMemset(pd.scratch, 0, sizeof(opt_float))
+        C.cudaMemset_ptds(pd.scratch, 0, sizeof(opt_float))
         gpu.computeCost(pd)
         gpu.computeCost_Graph(pd)
         var f : opt_float
-        C.cudaMemcpy(&f, pd.scratch, sizeof(opt_float), C.cudaMemcpyDeviceToHost)
+        C.cudaMemcpy_ptds(&f, pd.scratch, sizeof(opt_float), C.cudaMemcpyDeviceToHost)
         return f
     end
 
     local terra computeModelCost(pd : &PlanData) : opt_float
-        C.cudaMemset(pd.modelCost, 0, sizeof(opt_float))
+        C.cudaMemset_ptds(pd.modelCost, 0, sizeof(opt_float))
         gpu.computeModelCost(pd)
         gpu.computeModelCost_Graph(pd)
         var f : opt_float
-        C.cudaMemcpy(&f, pd.modelCost, sizeof(opt_float), C.cudaMemcpyDeviceToHost)
+        C.cudaMemcpy_ptds(&f, pd.modelCost, sizeof(opt_float), C.cudaMemcpyDeviceToHost)
         return f
     end
 
@@ -789,7 +789,7 @@ return function(problemSpec)
 
     local terra fetchQ(pd : &PlanData) : opt_float
         var f : opt_float
-        C.cudaMemcpy(&f, pd.q, sizeof(opt_float), C.cudaMemcpyDeviceToHost)
+        C.cudaMemcpy_ptds(&f, pd.q, sizeof(opt_float), C.cudaMemcpyDeviceToHost)
         return f
     end
 
@@ -809,7 +809,7 @@ return function(problemSpec)
 
     local terra GetToHost(ptr : &opaque, N : int) : &int
         var r = [&int](C.malloc(sizeof(int)*N))
-        C.cudaMemcpy(r,ptr,N*sizeof(int),C.cudaMemcpyDeviceToHost)
+        C.cudaMemcpy_ptds(r,ptr,N*sizeof(int),C.cudaMemcpyDeviceToHost)
         return r
     end
     local cusparseInner,cusparseOuter
@@ -838,7 +838,7 @@ return function(problemSpec)
 
                 cd(C.cudaMalloc([&&opaque](&pd.JTJ_csrColIndA), sizeof(int)*pd.JTJ_nnz))
                 cd(C.cudaMalloc([&&opaque](&pd.JTJ_csrValA), sizeof(float)*pd.JTJ_nnz))
-                cd(C.cudaThreadSynchronize())
+                cd(C.cudaDeviceSynchronize())
             end
 
             var endJTJmm : util.TimerEvent
@@ -886,7 +886,7 @@ return function(problemSpec)
             end
 
             var consts = array(0.f,1.f,2.f)
-            cd(C.cudaMemset(pd.Ap_X._contiguousallocation, -1, sizeof(float)*nUnknowns))
+            cd(C.cudaMemset_ptds(pd.Ap_X._contiguousallocation, -1, sizeof(float)*nUnknowns))
 
             if initialization_parameters.use_fused_jtj then
                 var endJTJp : util.TimerEvent
@@ -953,7 +953,7 @@ return function(problemSpec)
                 -- J alloc
                 C.cudaMalloc([&&opaque](&(pd.J_csrValA)), sizeof(opt_float)*nnzExp)
                 C.cudaMalloc([&&opaque](&(pd.J_csrColIndA)), sizeof(int)*nnzExp)
-                C.cudaMemset(pd.J_csrColIndA,-1,sizeof(int)*nnzExp)
+                C.cudaMemset_ptds(pd.J_csrColIndA,-1,sizeof(int)*nnzExp)
                 C.cudaMalloc([&&opaque](&(pd.J_csrRowPtrA)), sizeof(int)*(nResidualsExp+1))
 
                 -- J^T alloc
@@ -967,7 +967,7 @@ return function(problemSpec)
                 -- write J_csrRowPtrA end
                 var nnz = nnzExp
                 C.printf("setting rowptr[%d] = %d\n",nResidualsExp,nnz)
-                cd(C.cudaMemcpy(&pd.J_csrRowPtrA[nResidualsExp],&nnz,sizeof(int),C.cudaMemcpyHostToDevice))
+                cd(C.cudaMemcpy_ptds(&pd.J_csrRowPtrA[nResidualsExp],&nnz,sizeof(int),C.cudaMemcpyHostToDevice))
             end
         end end end
 
@@ -1005,9 +1005,9 @@ return function(problemSpec)
         var Q1 : opt_float
 		[util.initParameters(`pd.parameters,problemSpec, params_,false)]
 		if pd.solverparameters.nIter < pd.solverparameters.nIterations then
-			C.cudaMemset(pd.scanAlphaNumerator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
-			C.cudaMemset(pd.scanAlphaDenominator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
-			C.cudaMemset(pd.scanBetaNumerator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
+			C.cudaMemset_ptds(pd.scanAlphaNumerator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
+			C.cudaMemset_ptds(pd.scanAlphaDenominator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
+			C.cudaMemset_ptds(pd.scanBetaNumerator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
 
 			gpu.PCGInit1(pd)
 			if isGraph then
@@ -1018,8 +1018,8 @@ return function(problemSpec)
             escape
                 if problemSpec:UsesLambda() then
                     emit quote
-                        C.cudaMemset(pd.scanAlphaNumerator, 0, sizeof(opt_float))
-                        C.cudaMemset(pd.q, 0, sizeof(opt_float))
+                        C.cudaMemset_ptds(pd.scanAlphaNumerator, 0, sizeof(opt_float))
+                        C.cudaMemset_ptds(pd.q, 0, sizeof(opt_float))
                         if [initialization_parameters.jacobiScaling == JacobiScalingType.ONCE_PER_SOLVE] and pd.solverparameters.nIter == 0 then
                             gpu.PCGSaveSSq(pd)
                         end
@@ -1034,8 +1034,8 @@ return function(problemSpec)
             cusparseOuter(pd)
             for lIter = 0, pd.solverparameters.lIterations do
 
-                C.cudaMemset(pd.scanAlphaDenominator, 0, sizeof(opt_float))
-                C.cudaMemset(pd.q, 0, sizeof(opt_float))
+                C.cudaMemset_ptds(pd.scanAlphaDenominator, 0, sizeof(opt_float))
+                C.cudaMemset_ptds(pd.q, 0, sizeof(opt_float))
 
                 if not initialization_parameters.use_cusparse then
     				gpu.PCGStep1(pd)
@@ -1051,7 +1051,7 @@ return function(problemSpec)
                     gpu.PCGStep1_Finish(pd)
                 end
 
-				C.cudaMemset(pd.scanBetaNumerator, 0, sizeof(opt_float))
+				C.cudaMemset_ptds(pd.scanBetaNumerator, 0, sizeof(opt_float))
 
 				if [problemSpec:UsesLambda()] and ((lIter + 1) % residual_reset_period) == 0 then
                     gpu.PCGStep2_1stHalf(pd)
@@ -1066,7 +1066,7 @@ return function(problemSpec)
                 gpu.PCGStep3(pd)
 
 				-- save new rDotz for next iteration
-				C.cudaMemcpy(pd.scanAlphaNumerator, pd.scanBetaNumerator, sizeof(opt_float), C.cudaMemcpyDeviceToDevice)
+				C.cudaMemcpy_ptds(pd.scanAlphaNumerator, pd.scanBetaNumerator, sizeof(opt_float), C.cudaMemcpyDeviceToDevice)
 
 				if [problemSpec:UsesLambda()] then
 	                Q1 = fetchQ(pd)
