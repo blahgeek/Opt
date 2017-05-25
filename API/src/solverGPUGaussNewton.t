@@ -198,6 +198,8 @@ return function(problemSpec)
 		JTJ_nnz : int
 
 	    Jp : &float
+
+        h_cost_ptr : &opt_float
 	}
 	if initialization_parameters.use_cusparse then
 	    PlanData.entries:insert {"handle", CUsp.cusparseHandle_t }
@@ -771,9 +773,9 @@ return function(problemSpec)
         C.cudaMemset_ptds(pd.scratch, 0, sizeof(opt_float))
         gpu.computeCost(pd)
         gpu.computeCost_Graph(pd)
-        var f : opt_float
-        C.cudaMemcpy_ptds(&f, pd.scratch, sizeof(opt_float), C.cudaMemcpyDeviceToHost)
-        return f
+
+        C.cudaMemcpy_ptds(pd.h_cost_ptr, pd.scratch, sizeof(opt_float), C.cudaMemcpyDeviceToHost)
+        return @pd.h_cost_ptr
     end
 
     local terra computeModelCost(pd : &PlanData) : opt_float
@@ -1221,6 +1223,8 @@ return function(problemSpec)
 		C.cudaMalloc([&&opaque](&(pd.scanBetaNumerator)), sizeof(opt_float))
 		C.cudaMalloc([&&opaque](&(pd.scanAlphaDenominator)), sizeof(opt_float))
 		C.cudaMalloc([&&opaque](&(pd.modelCost)), sizeof(opt_float))
+
+        C.cudaMallocHost([&&opaque](&(pd.h_cost_ptr)), sizeof(opt_float))
 
 		C.cudaMalloc([&&opaque](&(pd.scratch)), sizeof(opt_float))
         C.cudaMalloc([&&opaque](&(pd.q)), sizeof(opt_float))
