@@ -588,8 +588,9 @@ function ImageType:terratype()
         end
         terra Image:setGPUptr(ptr : &uint8)
             if [&uint8](self.data) ~= ptr then
-                if self.data ~= nil then
+                if self.tex ~= 0 then
                     cd(C.cudaDestroyTextureObject(self.tex))
+                    self.tex = 0
                 end
                 self.tex = wrapBindlessTexture(ptr, channelcount, W, H)
             end
