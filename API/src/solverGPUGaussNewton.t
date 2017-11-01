@@ -528,6 +528,11 @@ return function(problemSpec)
             end
         end
 
+        terra kernels.PCGStep2And3 (pd: PlanData)
+            kernels.PCGStep2(pd)
+            kernels.PCGStep3(pd)
+        end
+
         terra kernels.PCGLinearUpdate(pd : PlanData)
             var idx : Index
             if idx:initFromCUDAParams() and not fmap.exclude(idx,pd.parameters) then
@@ -748,6 +753,7 @@ return function(problemSpec)
                                                                         "PCGStep2_1stHalf",
                                                                         "PCGStep2_2ndHalf",
                                                                         "PCGStep3",
+                                                                        "PCGStep2And3",
                                                                         "PCGLinearUpdate",
                                                                         "revertUpdate",
                                                                         "savePreviousUnknowns",
@@ -767,7 +773,7 @@ return function(problemSpec)
                                                                         })
 
     local terra computeCost(pd : &PlanData) : opt_float
-        C.cudaMemset_ptds(pd.scratch, 0, sizeof(opt_float))
+        C.cudaMemsetAsync_ptsz(pd.scratch, 0, sizeof(opt_float), nil)
         gpu.computeCost(pd)
         gpu.computeCost_Graph(pd)
 
@@ -776,7 +782,7 @@ return function(problemSpec)
     end
 
     local terra computeModelCost(pd : &PlanData) : opt_float
-        C.cudaMemset_ptds(pd.modelCost, 0, sizeof(opt_float))
+        C.cudaMemsetAsync_ptsz(pd.modelCost, 0, sizeof(opt_float), nil)
         gpu.computeModelCost(pd)
         gpu.computeModelCost_Graph(pd)
         var f : opt_float
@@ -885,7 +891,7 @@ return function(problemSpec)
             end
 
             var consts = array(0.f,1.f,2.f)
-            cd(C.cudaMemset_ptds(pd.Ap_X._contiguousallocation, -1, sizeof(float)*nUnknowns))
+            cd(C.cudaMemsetAsync_ptsz(pd.Ap_X._contiguousallocation, -1, sizeof(float)*nUnknowns), nil)
 
             if initialization_parameters.use_fused_jtj then
                 var endJTJp : util.TimerEvent
@@ -1004,9 +1010,9 @@ return function(problemSpec)
         var Q1 : opt_float
 		[util.initParameters(`pd.parameters,problemSpec, params_,false)]
 		if pd.solverparameters.nIter < pd.solverparameters.nIterations then
-			C.cudaMemset_ptds(pd.scanAlphaNumerator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
-			C.cudaMemset_ptds(pd.scanAlphaDenominator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
-			C.cudaMemset_ptds(pd.scanBetaNumerator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
+			C.cudaMemsetAsync_ptsz(pd.scanAlphaNumerator, 0, sizeof(opt_float), nil)	--scan in PCGInit1 requires reset
+			C.cudaMemsetAsync_ptsz(pd.scanAlphaDenominator, 0, sizeof(opt_float), nil)	--scan in PCGInit1 requires reset
+			C.cudaMemsetAsync_ptsz(pd.scanBetaNumerator, 0, sizeof(opt_float), nil)	--scan in PCGInit1 requires reset
 
 			gpu.PCGInit1(pd)
 			if isGraph then
@@ -1017,8 +1023,8 @@ return function(problemSpec)
             escape
                 if problemSpec:UsesLambda() then
                     emit quote
-                        C.cudaMemset_ptds(pd.scanAlphaNumerator, 0, sizeof(opt_float))
-                        C.cudaMemset_ptds(pd.q, 0, sizeof(opt_float))
+                        C.cudaMemsetAsync_ptsz(pd.scanAlphaNumerator, 0, sizeof(opt_float), nil)
+                        C.cudaMemsetAsync_ptsz(pd.q, 0, sizeof(opt_float), nil)
                         if [initialization_parameters.jacobiScaling == JacobiScalingType.ONCE_PER_SOLVE] and pd.solverparameters.nIter == 0 then
                             gpu.PCGSaveSSq(pd)
                         end
@@ -1033,8 +1039,8 @@ return function(problemSpec)
             cusparseOuter(pd)
             for lIter = 0, pd.solverparameters.lIterations do
 
-                C.cudaMemset_ptds(pd.scanAlphaDenominator, 0, sizeof(opt_float))
-                C.cudaMemset_ptds(pd.q, 0, sizeof(opt_float))
+                C.cudaMemsetAsync_ptsz(pd.scanAlphaDenominator, 0, sizeof(opt_float), nil)
+                C.cudaMemsetAsync_ptsz(pd.q, 0, sizeof(opt_float), nil)
 
                 if not initialization_parameters.use_cusparse then
     				gpu.PCGStep1(pd)
@@ -1050,7 +1056,7 @@ return function(problemSpec)
                     gpu.PCGStep1_Finish(pd)
                 end
 
-				C.cudaMemset_ptds(pd.scanBetaNumerator, 0, sizeof(opt_float))
+				C.cudaMemsetAsync_ptsz(pd.scanBetaNumerator, 0, sizeof(opt_float), nil)
 
 				if [problemSpec:UsesLambda()] and ((lIter + 1) % residual_reset_period) == 0 then
                     gpu.PCGStep2_1stHalf(pd)
@@ -1059,13 +1065,13 @@ return function(problemSpec)
                         gpu.computeAdelta_Graph(pd)
                     end
                     gpu.PCGStep2_2ndHalf(pd)
+                    gpu.PCGStep3(pd)
                 else
-                    gpu.PCGStep2(pd)
+                    gpu.PCGStep2And3(pd)
                 end
-                gpu.PCGStep3(pd)
 
 				-- save new rDotz for next iteration
-				C.cudaMemcpy_ptds(pd.scanAlphaNumerator, pd.scanBetaNumerator, sizeof(opt_float), C.cudaMemcpyDeviceToDevice)
+				C.cudaMemcpyAsync_ptsz(pd.scanAlphaNumerator, pd.scanBetaNumerator, sizeof(opt_float), C.cudaMemcpyDeviceToDevice, nil)
 
 				if [problemSpec:UsesLambda()] then
 	                Q1 = fetchQ(pd)
