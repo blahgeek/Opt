@@ -1,4 +1,3 @@
-local pascalOrBetterGPU = false
 local S = require("std")
 require("precision")
 local util = {}
@@ -19,8 +18,49 @@ util.C = terralib.includecstring [[
 ]]
 local C = util.C
 
+--[[ rPrint(struct, [limit], [indent])   Recursively print arbitrary data. 
+    Set limit (default 100) to stanch infinite loops.
+    Indents tables as [KEY] VALUE, nested tables as [KEY] [KEY]...[KEY] VALUE
+    Set indent ("") to prefix each line:    Mytable [KEY] [KEY]...[KEY] VALUE
+--]]
+function util.rPrint(s, l, i) -- recursive Print (structure, limit, indent)
+    l = (l) or 100; i = i or "";    -- default item limit, indent string
+    local ts = type(s);
+    if (l<1) then print (i,ts," *snip* "); return end;
+    if (ts ~= "table") then print (i,ts,s); return end
+    print (i,ts);           -- print "table"
+    for k,v in pairs(s) do  -- print "[KEY] VALUE"
+        util.rPrint(v, l-1, i.."\t["..tostring(k).."]");
+    end
+end 
+
+function table.keys(tab)
+    local result = terralib.newlist()
+    for k,_ in pairs(tab) do
+        result:insert(k)
+    end
+    return result
+end
+
 local cuda_compute_version = 30
 local libdevice = terralib.cudahome..string.format("/nvvm/libdevice/libdevice.compute_%d.10.bc",cuda_compute_version)
+
+local pascalOrBetterGPU = false 
+
+terra deviceMajorComputeCapability()
+    var deviceID : int32
+    C.cudaGetDevice(&deviceID)
+    var majorComputeCapability : int32
+    C.cudaDeviceGetAttribute(&majorComputeCapability, C.cudaDevAttrComputeCapabilityMajor, deviceID)
+    return majorComputeCapability
+end
+local computeC = deviceMajorComputeCapability()
+if computeC >= 6 then
+    pascalOrBetterGPU = true
+end
+if opt_float == double and (not pascalOrBetterGPU) then
+    print("Warning: double precision on GPUs with compute capability < 6.0 (before Pascal) have no native double precision atomics, so we must use slow software emulation instead. This has a large performance impact on graph energies.")
+end
 
 local extern = terralib.externfunction
 if terralib.linkllvm then
@@ -315,8 +355,8 @@ terra Timer:cleanup()
         C.cudaEventDestroy(eventInfo.startEvent);
         C.cudaEventDestroy(eventInfo.endEvent);
     end
-	self.timingInfo:delete()
-end
+    self.timingInfo:delete()
+end 
 
 
 terra Timer:startEvent(name : rawstring,  stream : C.cudaStream_t, endEvent : &C.cudaEvent_t)
@@ -592,6 +632,18 @@ util.initPrecomputedImages = function(self, ProblemSpec)
     return stmts
 end
 
+util.freePrecomputedImages = function(self, ProblemSpec)
+    local stmts = terralib.newlist()
+    for _, entry in ipairs(ProblemSpec.parameters) do
+        if entry.kind == "ImageParam" and entry.idx == "alloc" then
+            stmts:insert quote
+                self.[entry.name]:freeData()
+            end
+        end
+    end
+    return stmts
+end
+
 
 
 
@@ -644,7 +696,34 @@ local checkedLaunch = macro(function(kernelName, apicall)
         r
     end end)
 
-local GRID_SIZES = { {64,1,1}, {16,16,1}, {8,8,4} }
+-- Assumes x is (nonnegative) power of 2
+local function iLog2(x)
+    local result = 0
+    while x > 1 do
+        result = result + 1
+        x = x / 2
+    end
+    return result
+end
+
+-- Get the block dimensions that best approximate a square/cube 
+-- in 2 or 3 dimensions while only using power of 2 side lengths.
+local function getBlockDims(blockSize)
+    local LOG_BLOCK_SIZE = iLog2(blockSize)
+    local dim2x = math.ceil(LOG_BLOCK_SIZE/2)
+    local dim2y = LOG_BLOCK_SIZE - dim2x
+
+    local dim3x = math.ceil(LOG_BLOCK_SIZE/3)
+    local dim3y = math.ceil((LOG_BLOCK_SIZE - dim3x)/2)
+    local dim3z = LOG_BLOCK_SIZE - dim3x - dim3y
+
+    return { {blockSize,1,1}, {math.pow(2,dim2x),math.pow(2,dim2y),1}, {math.pow(2,dim3x),math.pow(2,dim3y),math.pow(2,dim3z)} }
+end
+
+local BLOCK_SIZE = _opt_threads_per_block
+assert(BLOCK_SIZE % 32 == 0, "BLOCK_SIZE should be a multiple of the warp size (32), but is "..tostring(BLOCK_SIZE))
+
+local BLOCK_DIMS = getBlockDims(BLOCK_SIZE)
 
 
 local function makeGPULauncher(PlanData,kernelName,ft,compiledKernel)
@@ -660,13 +739,13 @@ local function makeGPULauncher(PlanData,kernelName,ft,compiledKernel)
             local exps = terralib.newlist()
             for i = 1,3 do
                local dim = #ispace.dims >= i and ispace.dims[i].size or 1
-                local bs = GRID_SIZES[#ispace.dims][i]
+                local bs = BLOCK_DIMS[#ispace.dims][i]
                 exps:insert(dim)
                 exps:insert(bs)
             end
             return exps
         else
-            return {`pd.parameters.[ft.graphname].N,64,1,1,1,1}
+            return {`pd.parameters.[ft.graphname].N,BLOCK_DIMS[1][1],1,1,1,1}
         end
     end
     local terra GPULauncher(pd : &PlanData, [params])
@@ -707,13 +786,13 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
 	       assert(dimcount <= 3, "cannot launch over images with more than 3 dims")
            local ks = delegate.CenterFunctions(ispace,problemfunction.functionmap)
            for name,func in pairs(ks) do
-                kernelFunctions[getkname(name,problemfunction.typ)] = { kernel = func , annotations = { {"maxntidx", GRID_SIZES[dimcount][1]}, {"maxntidy", GRID_SIZES[dimcount][2]}, {"maxntidz", GRID_SIZES[dimcount][3]}, {"minctasm",1} } }
+                kernelFunctions[getkname(name,problemfunction.typ)] = { kernel = func , annotations = { {"maxntidx", BLOCK_DIMS[dimcount][1]}, {"maxntidy", BLOCK_DIMS[dimcount][2]}, {"maxntidz", BLOCK_DIMS[dimcount][3]}, {"minctasm",1} } }
            end
         else
             local graphname = problemfunction.typ.graphname
             local ks = delegate.GraphFunctions(graphname,problemfunction.functionmap)
-            for name,func in pairs(ks) do
-                kernelFunctions[getkname(name,problemfunction.typ)] = { kernel = func , annotations = { {"maxntidx", 256}, {"minctasm",1} } }
+            for name,func in pairs(ks) do            
+                kernelFunctions[getkname(name,problemfunction.typ)] = { kernel = func , annotations = { {"maxntidx", BLOCK_DIMS[1][1]}, {"minctasm",1} } }
             end
         end
     end
@@ -749,6 +828,28 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
         grouplaunchers[name] = fn
     end
     return grouplaunchers, loader
+end
+
+
+function util.reportGPUMemoryUse()
+    local terra reportMem()
+        var free_byte : C.size_t
+        var total_byte : C.size_t
+
+        cd(C.cudaMemGetInfo( &free_byte, &total_byte ))
+
+
+        var free_db = [double](free_byte)
+
+        var total_db = [double](total_byte)
+
+        var used_db = total_db - free_db ;
+
+        C.printf("GPU memory usage: used = %f, free = %f MB, total = %f MB\n",
+
+            used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0);
+    end
+    reportMem()
 end
 
 return util

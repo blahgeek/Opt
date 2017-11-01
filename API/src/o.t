@@ -4,6 +4,7 @@ local ffi = require("ffi")
 local util = require("util")
 local optlib = require("lib")
 ad = require("ad")
+require("version")
 require("precision")
 local A = ad.classes
 
@@ -32,6 +33,10 @@ local verboseAD 	= _opt_verbosity > 1
 
 local vprintfname = ffi.os == "Windows" and "vprintf" or "cudart:vprintf"
 local vprintf = terralib.externfunction(vprintfname, {&int8,&int8} -> int)
+
+if verboseSolver then
+    print("Using Opt "..opt_version_string)
+end
 
 local function createbuffer(args)
     local Buf = terralib.types.newstruct()
@@ -121,6 +126,7 @@ end
 struct opt.Plan(S.Object) {
     init : {&opaque,&&opaque} -> {} -- plan.data,params
     setsolverparameter : {&opaque,rawstring,&opaque} -> {} -- plan.data,name,param
+    free : {&opaque} -> {} -- plan.data
     step : {&opaque,&&opaque} -> int
     cost : {&opaque} -> double
     data : &opaque
@@ -133,6 +139,13 @@ local function problemDefine(source, kind, pid)
     pid[0] = problemmetadata.id
 end
 problemDefine = terralib.cast({rawstring, rawstring, &int} -> {}, problemDefine)
+
+
+local function problemDelete(pid)
+    -- TODO: Some other value?
+    problems[pid] = "DELETED"
+end
+problemDelete = terralib.cast({int} -> {}, problemDelete)
 
 local List = terralib.newlist
 A:Extern("ExpLike",function(x) return ad.Exp:isclassof(x) or ad.ExpVector:isclassof(x) end)
@@ -196,16 +209,16 @@ function opt.ProblemSpec()
     ps.parameters = terralib.newlist() -- ProblemParam*
     ps.names = {} -- name -> index in parameters list
     ps.functions = List() -- ProblemFunctions*
-	ps.maxStencil = 0
-	ps.stage = "inputs"
-	ps.usepreconditioner = false
-	ps.problemkind = opt.problemkind
-	return ps
+    ps.maxStencil = 0
+    ps.stage = "inputs"
+    ps.usepreconditioner = false
+    ps.problemkind = opt.problemkind
+    return ps
 end
 
 function ProblemSpec:UsePreconditioner(v)
-	self:Stage "inputs"
-	self.usepreconditioner = v
+    self:Stage "inputs"
+    self.usepreconditioner = v
 end
 function ProblemSpec:Stage(name)
     assert(PROBLEM_STAGES[self.stage] <= PROBLEM_STAGES[name], "all inputs must be specified before functions are added")
@@ -223,12 +236,12 @@ function ImageParam:terratype() return self.imagetype:terratype() end
 
 function ProblemSpec:MaxStencil()
     self:Stage "functions"
-	return self.maxStencil
+    return self.maxStencil
 end
 
 function ProblemSpec:Stencil(stencil)
     self:Stage "inputs"
-	self.maxStencil = math.max(stencil, self.maxStencil)
+    self.maxStencil = math.max(stencil, self.maxStencil)
 end
 
 function ProblemSpec:newparameter(p)
@@ -502,8 +515,8 @@ function ImageType:terratype()
     local textured,pitched = self:usestexture()
     local Index = self.ispace:indextype()
     function Image.metamethods.__typename()
-	  return string.format("Image(%s,%s,%d)",tostring(self.scalartype),tostring(self.ispace),channelcount)
-	end
+      return string.format("Image(%s,%s,%d)",tostring(self.scalartype),tostring(self.ispace),channelcount)
+    end
 
     local VT = &vector(scalartype,channelcount)
     -- reads
@@ -542,7 +555,7 @@ function ImageType:terratype()
         end
     end
 
-    if scalartype == float or scalartype == double then
+    if scalartype == opt_float then    
         terra Image:atomicAddChannel(idx : Index, c : int32, v : scalartype)
             var addr : &scalartype = &self.data[idx:tooffset()].data[c]
             util.atomicAdd(addr,v)
@@ -577,10 +590,6 @@ function ImageType:terratype()
     end
     local cardinality = self.ispace:cardinality()
     terra Image:totalbytes() return sizeof(vectortype)*cardinality end
-	terra Image:initCPU()
-		self.data = [&vectortype](C.malloc(self:totalbytes()))
-		C.memset(self.data,0,self:totalbytes())
-	end
     if textured then
         local W,H = cardinality,0
         if pitched then
@@ -596,14 +605,27 @@ function ImageType:terratype()
             end
             self.data = [&vectortype](ptr)
         end
+        terra Image:freeData()
+            if self.data ~= nil then
+                cd(C.cudaDestroyTextureObject(self.tex))
+                cd(C.cudaFree([&opaque](self.data)))
+                self.data = nil
+            end
+        end
     else
         terra Image:setGPUptr(ptr : &uint8) self.data = [&vectortype](ptr) end
+        terra Image:freeData()
+            if self.data ~= nil then
+                cd(C.cudaFree([&opaque](self.data)))
+                self.data = nil
+            end
+        end
     end
-	terra Image:initFromGPUptr( ptr : &uint8 )
+    terra Image:initFromGPUptr( ptr : &uint8 )
         self.data = nil
         self:setGPUptr(ptr)
     end
-	terra Image:initGPU()
+    terra Image:initGPU()
         var data : &uint8
         cd(C.cudaMalloc([&&opaque](&data), self:totalbytes()))
         cd(C.cudaMemset_ptds([&opaque](data), 0, self:totalbytes()))
@@ -627,7 +649,12 @@ end
 
 function UnknownType:init()
     self.ispaces,self.ispacetoimages = MapAndGroupBy(self.images, function(ip)
-        assert(ip.imagetype.scalartype == opt_float, "unknowns must be floating point numbers")
+        if opt_float == float then
+            assert(ip.imagetype.scalartype == float, "Unknowns must be floats when doublePrecision = false, but "..ip.name.." was declared as "..tostring(ip.imagetype.scalartype))
+        else
+            assert(opt_float == double, "Invalid unknown type "..tostring(opt_float))
+            assert(ip.imagetype.scalartype == double, "Unknowns must be doubles when doublePrecision = true, but "..ip.name.." was declared as "..tostring(ip.imagetype.scalartype))
+        end
         return ip.imagetype.ispace, ip
     end)
     self.ispacesizes = {}
@@ -693,11 +720,21 @@ function UnknownType:terratype()
                 end
             end
         end
+        terra T:freeData()
+            cd(C.cudaFree(self._contiguousallocation))
+        end
     else
         terra T:initGPU()
             escape
                 for i,ip in ipairs(images) do
                     emit quote self.[ip.name]:initGPU() end
+                end
+            end
+        end
+        terra T:freeData()
+            escape
+                for i,ip in ipairs(images) do
+                    emit quote self.[ip.name]:freeData() end
                 end
             end
         end
@@ -797,7 +834,7 @@ function ProblemSpec:Graph(name, idx, ...)
     self:newparameter(GraphParam(GraphType,name,idx))
 end
 
-local allPlans = terralib.newlist()
+local activePlans = terralib.newlist()
 
 errorPrint = rawget(_G,"errorPrint") or print
 
@@ -816,6 +853,12 @@ function opt.problemSpecFromSource(source)
     return libinstance.Result()
 end
 
+local function printCurrentBytes()
+    collectgarbage()
+    collectgarbage()
+    print(collectgarbage("count"))
+end
+
 local function problemPlan(id, dimensions, pplan, saveobj)
     local saveobj_str
     if saveobj == nil then
@@ -823,26 +866,46 @@ local function problemPlan(id, dimensions, pplan, saveobj)
     else
         saveobj_str = ffi.string(saveobj)
     end
-    local success,p = xpcall(function()
-		local problemmetadata = assert(problems[id])
+    local success,p = xpcall(function()  
+        local problemmetadata = assert(problems[id])
         opt.dimensions = dimensions
         opt.math = problemmetadata.kind:match("GPU") and util.gpuMath or util.cpuMath
         opt.problemkind = problemmetadata.kind
-		local b = terralib.currenttimeinseconds()
-        local tbl = opt.problemSpecFromSource(problemmetadata.source)
+        local b = terralib.currenttimeinseconds()
+        local tbl = opt.problemSpecFromFile(problemmetadata.filename)
         assert(ProblemSpec:isclassof(tbl))
-		local result, loader = compilePlan(tbl,problemmetadata.kind)
-		local e = terralib.currenttimeinseconds()
-		print("compile time: ",e - b)
+        local result, loader = compilePlan(tbl,problemmetadata.kind)
+        local e = terralib.currenttimeinseconds()
+        print("compile time: ",e - b)
         if saveobj_str:len() > 0 then
             terralib.saveobj(saveobj_str, {opt_make_plan = result, opt_load_module = loader})
         end
-		allPlans:insert(result)
-		pplan[0] = result()
+        pplan[0] = result()
+        activePlans[tostring(pplan[0])] = result
         print("problem plan complete")
+		if _opt_verbosity > 0 then
+	        util.reportGPUMemoryUse()
+	        printCurrentBytes()
+		end
     end,function(err) errorPrint(debug.traceback(err,2)) end)
 end
 problemPlan = terralib.cast({int,&uint32,&&opt.Plan,rawstring} -> {}, problemPlan)
+
+local function planFree(pplan)
+    local success,p = xpcall(function()
+        activePlans[tostring(pplan)] = nil
+        if _opt_verbosity > 0 then
+			util.reportGPUMemoryUse()
+		end
+        print("plan free complete")
+        collectgarbage()
+        collectgarbage()
+		if _opt_verbosity > 0 then
+        	util.reportGPUMemoryUse()
+		end
+    end,function(err) errorPrint(debug.traceback(err,2)) end)
+end
+planFree = terralib.cast({&opt.Plan} -> {}, planFree)
 
 function Offset:__tostring() return string.format("(%s)",self.data:map(tostring):concat(",")) end
 function GraphElement:__tostring() return ("%s_%s"):format(tostring(self.graph), self.element) end
@@ -865,7 +928,7 @@ function ImageAccess:shape() return self._shape end -- implementing AD's API for
 local emptygradient = {}
 function ImageAccess:gradient()
     if self.image.gradientimages then
-        assert(Offset:isclassof(self.index),"NYI - support for graphs")
+        assert(Offset:isclassof(self.index),"NYI - support for gradient images of graphs")
         local gt = {}
         for i,im in ipairs(self.image.gradientimages) do
             local k = im.unknown:shift(self.index)
@@ -893,7 +956,7 @@ function ad.ProblemSpec()
 end
 function ProblemSpecAD:UsesLambda() return self.P:UsesLambda() end
 function ProblemSpecAD:UsePreconditioner(v)
-	self.P:UsePreconditioner(v)
+    self.P:UsePreconditioner(v)
 end
 
 function ProblemSpecAD:Image(name,typ,dims,idx,isunknown)
@@ -970,7 +1033,7 @@ function ProblemSpecAD:ComputedImage(name,dims,exp)
     local seen = {}
     exp:visit(function(a)
         if ImageAccess:isclassof(a) and a.image.location == A.UnknownLocation then
-            assert(Offset:isclassof(a.index),"NYI - support for graphs")
+            assert(Offset:isclassof(a.index),"NYI - support for precomputed graphs")
             if not seen[a] then
                 seen[a] = true
                 unknowns:insert(a)
@@ -1024,11 +1087,11 @@ function Image:__call(first,...)
         index = Offset(o)
         c = select(self:DimCount(), ...)
     end
-    if GraphElement:isclassof(index) then
-        assert(index.ispace == self.type.ispace,"graph element is in a different index space from image")
+    if GraphElement:isclassof(index) then    
+        assert(index.ispace == self.type.ispace,"Graph element is in a different index space from image")
     end
     c = tonumber(c)
-    assert(not c or c < self.type.channelcount, "channel outside of range")
+    assert(not c or c < self.type.channelcount, "Channel outside of range")
     if self.scalar or c then
         return ImageAccess(self,ad.scalar,index,c or 0):asvar()
     else
@@ -1045,7 +1108,7 @@ function ImageVector:__call(...)
     local channelindex = self.images[1]:DimCount() + 1
     if #args == channelindex then
         local c = args[channelindex]
-        assert(c < #self.images, "channel outside of range")
+        assert(c < #self.images, "Channel outside of range")
         return self.images[c+1](unpack(args,1,channelindex-1))
     end
     local result = self.images:map(function(im) return im(unpack(args)) end)
@@ -1074,7 +1137,7 @@ function BoundsAccess:shift(o)
     return BoundsAccess(self.min:shift(o),self.max:shift(o))
 end
 function ImageAccess:shift(o)
-    assert(Offset:isclassof(self.index), "cannot shift graph accesses!")
+    assert(Offset:isclassof(self.index), "Cannot shift graph accesses!")
     return ImageAccess(self.image,self:shape(),self.index:shift(o),self.channel)
 end
 function IndexValue:shift(o)
@@ -1386,8 +1449,12 @@ local function createfunction(problemspec,name,Index,arguments,results,scatters)
 
         for i,r in ipairs(roots) do
             if not state[r] then -- roots may appear in list more than once
-                state[r] = "ready"
-                readylists[#readylists]:insert(r)
+                -- It is possible for a member of the irroots list to
+                -- not actually be a root of the DAG; prune those out
+                if #uses[r] == 0 then
+                    state[r] = "ready"
+                    readylists[#readylists]:insert(r)
+                end
             end
         end
 
@@ -1637,7 +1704,7 @@ local function createfunction(problemspec,name,Index,arguments,results,scatters)
         elseif image.location == A.UnknownLocation then
             return `P.X.[image.name]
         else
-            local sym = assert(extraarguments[image.location.idx],"unknown extra image")
+            local sym = assert(extraarguments[image.location.idx],"Unknown extra image")
             return `sym.[image.name]
         end
     end
@@ -1734,7 +1801,7 @@ local function createfunction(problemspec,name,Index,arguments,results,scatters)
 
     function emit(ir)
         assert(ir)
-        return assert(emitted[ir],"use before def")
+        return assert(emitted[ir],"Use before def")
     end
 
     local basecondition = Condition:create(List{})
@@ -1916,8 +1983,57 @@ local function classifyexpression(exp) -- what index space, or graph is this thi
     return classification,template
 end
 
-local function toenergyspecs(Rs)
+local function extract_unused_unknown_ispaces(kinds,kind_to_templates)
+    local used_nongraph_unknown_ispaces = {}
+    local all_unknown_ispaces = {}
+    for _,k in ipairs(kinds) do
+        for _,template in ipairs(kind_to_templates[k]) do
+            for _,u in ipairs(template.unknowns) do
+                if k.kind == "CenteredFunction" then
+                    used_nongraph_unknown_ispaces[u.image.type.ispace] = true
+                end
+                all_unknown_ispaces[u.image.type.ispace] = true
+            end
+        end
+    end
+    local unused_unknown_ispaces = terralib.newlist()
+    for _,k in ipairs(table.keys(all_unknown_ispaces)) do
+        if not used_nongraph_unknown_ispaces[k] then
+            unused_unknown_ispaces:insert(k)
+        end
+    end
+    return unused_unknown_ispaces
+end
+
+local function insert_dummy_energies_for_unused_unknown_ispaces(kinds,kind_to_templates,unused_unknown_ispaces)
+    for _,ispace in ipairs(unused_unknown_ispaces) do
+        local kind = A.CenteredFunction(ispace)
+        if not kind_to_templates[kind] then
+            kinds:insert(kind)
+            kind_to_templates[kind] = terralib.newlist()
+        end
+        local template = A.ResidualTemplate(ad.toexp(0),terralib.newlist())
+        kind_to_templates[kind]:insert(template)
+    end
+end
+
+local function handle_unused_unknown_ispaces(kinds,kind_to_templates)
+    local unused_unknown_ispaces = extract_unused_unknown_ispaces(kinds,kind_to_templates)
+    if #unused_unknown_ispaces > 0 then
+        local message = "No unknownwise residuals for ispaces(s) "..tostring(unused_unknown_ispaces[1])
+        for i=2,#unused_unknown_ispaces do
+            message = message..", "..tostring(unused_unknown_ispaces[i])
+        end
+        print(message..". Creating zero-valued stand-ins.")
+    end
+    insert_dummy_energies_for_unused_unknown_ispaces(kinds,kind_to_templates,unused_unknown_ispaces)
+end
+
+local function toenergyspecs(Rs)    
     local kinds,kind_to_templates = MapAndGroupBy(Rs,classifyexpression)
+    -- We need to execute kernels for unknowns even if they have no unknownwise residuals,
+    -- to initialize values for graph residuals and to generally just do PCG/GN bookkeeping
+    handle_unused_unknown_ispaces(kinds,kind_to_templates)
     return kinds:map(function(k) return A.EnergySpec(k,kind_to_templates[k]) end)
 end
 
@@ -2356,7 +2472,6 @@ local function extractresidualterms(...)
 end
 function ProblemSpecAD:Cost(...)
     local terms = extractresidualterms(...)
-
     local functionspecs = List()
     local energyspecs = toenergyspecs(terms)
     for _,energyspec in ipairs(energyspecs) do
@@ -2457,17 +2572,18 @@ terra opt.ProblemDefine(source : rawstring, kind : rawstring)
     return [&opt.Problem](id)
 end
 terra opt.ProblemDelete(p : &opt.Problem)
-    var id = int64(p)
-    --TODO: remove from problem table
+    var id = int(int64(p))
+    problemDelete(id)
 end
 terra opt.ProblemPlan(problem : &opt.Problem, dimensions : &uint32, saveobj: rawstring) : &opt.Plan
-	var p : &opt.Plan = nil
-	problemPlan(int(int64(problem)),dimensions,&p,saveobj)
-	return p
+    var p : &opt.Plan = nil 
+    problemPlan(int(int64(problem)),dimensions,&p,saveobj)
+    return p
 end
 
 terra opt.PlanFree(plan : &opt.Plan)
-    -- TODO: plan should also have a free implementation
+    plan.free(plan.data)
+    planFree(plan)
     plan:delete()
 end
 

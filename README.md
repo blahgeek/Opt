@@ -18,11 +18,15 @@ mmara at cs dot stanford dot edu
 
 or open an issue on github (https://github.com/niessner/Opt); or if you feel like getting your hands dirty, submit a pull request with some changes!
 
+See the [roadmap](https://github.com/niessner/Opt/blob/master/ROADMAP.md) for near-future changes.
+
+See the [changelog](https://github.com/niessner/Opt/blob/master/CHANGELOG.md) for changes since the initial release.
+
 ### Prerequisites ###
 
 Opt and all of its examples require a recent version of [Terra](https://github.com/zdevito/terra)/, and [CUDA 7.5](https://developer.nvidia.com/cuda-75-downloads-archive). On Windows we use Visual Studio 2013 for development/compilation, though other versions may also work. 
 
-Download and unzip the [terra binary release for your platform, release-2016-03-25](https://github.com/zdevito/terra/releases). Add terra/bin to your $PATH environment variable (if you want to run the examples).
+Download and unzip the [terra binary release for your platform, release-2016-03-25](https://github.com/zdevito/terra/releases). Add terra/bin to your $PATH environment variable (if you want to run the examples). *On windows, this binary release searches for the CUDA compiler binaries using the CUDA_PATH environment variable. The default installation of the CUDA 7.5 Toolkit sets these paths, but if you did a nonstandard installation or subsequently installed a different version of CUDA, you will need to (re)set the path yourself.* 
 
 Our recommended directory structure for development is:
 
@@ -340,6 +344,21 @@ If you do not want the default behavior, you can use the `InBounds(x,y)` functio
 
 It is also possible to exclude arbitrary pixels from the solve using the `Exclude(exp)` method. When `exp` is true, unknowns defined at these pixels will not be updated and residuals at these pixels will not be evaluated.
 
+
+### ComputedArray ###
+
+Energy functions for neighboring pixels can share expensive-to-compute expressions. For instance,
+our [shape-from-shading example](https://github.com/niessner/Opt/blob/master/examples/shape_from_shading/shape_from_shading.t#L67) uses an expensive lighting calculation that is shared by neighboring pixels. We allow the user to turn these calculations into computed arrays, which behave
+like arrays when used in energy functions, but are defined as an expression of other arrays:
+
+    -- B_I is previously defined as a function that uses 
+    -- a large number of images. After this line, B_I can
+    -- be accessed like a regular Array or Image
+    B_I = ComputedArray("B_I", {W,H}, B_I(0,0))
+
+Computed arrays can include computations using unknowns, and are recalculated as necessary during the optimization. Similar to scheduling annotations in Halide, they allow the user to balance recompute with locality at a high-level.
+
+
 ### Vectors ###
 
     vector = Vector(a,b,c)
@@ -409,6 +428,16 @@ Energy Specification:
     
 The function `Stencil` is a Lua iterator that makes it easy to define similar energy functions for a set of neighboring offsets.
 
+There currently is no equivalent iterator for nodes in a graph hyperedge, but for the time being you can roll your own using standard Lua functionality. For example:
+
+	G = Graph("G", 3, "v0", 4, "v1", 5, "v2", 6, "v3", 7)
+	nodes = {"v0","v1","v2","v3"}
+	local result = 1.0
+	for _,n in ipairs(nodes) do
+		result = result * X(G[n])
+	end
+	Energy(result)
+
 
 Solver Parameters
 =================
@@ -439,9 +468,17 @@ more details until we flesh out this section of the documentation.
     min_lm_diagonal = 1e-6,
     max_lm_diagonal = 1e32,
 
+Initial Guess
+=================
+Opt uses the values of the unknown array you pass into it as the initial guess for the solve. Since nonlinear least-square solvers only find a local minimum, it is best if you provide Opt with a reasonable initial guess. In the absence of outside information, at least memset the values of the unknown so that Opt doesn't start with garbage data for the initial guess, which may contain infinities or even NaNs!
 
 ### Common Problems ###
 
-"The program can't start because cudart64_75.dll is missing from your computer. Try reinstalling the program to fix this problem." Cuda 7.5 is not on your path. Perhaps you didn't install it, or haven't closed Visual Studio since installing it. If you have done both, you'll need to manually add it to your path environment variable. By default, the path will be "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v7.5\bin"
-
-"The program can't start because terra.dll is missing from your computer. Try reinstalling the program to fix this problem." Terra is not on your path. Perhaps you didn't add it to your $PATH environment variable, or haven't closed Visual Studio since adding it.
+1. All examples/tests immediately quit with an error message about cudalib being nil: 
+	- Your Terra installation likely does not have CUDA enabled. You can double check by running the Terra tests, and seeing if the cuda tests fail. Remember to install CUDA 7.5 before running Opt. On windows, the binary release searches for the CUDA compiler binaries using the CUDA_PATH environment variable. The default installation of the CUDA 7.5 Toolkit sets these paths, but if you did a nonstandard installation or subsequently installed a different version of CUDA, you will need to (re)set the path yourself.
+2. "The program can't start because cudart64_75.dll is missing from your computer. Try reinstalling the program to fix this problem.": 
+	- CUDA 7.5 is not on your path. Perhaps you didn't install it, or haven't closed Visual Studio since installing it. If you have done both, you'll need to manually add it to your path environment variable. By default, the path will be "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v7.5\bin"
+3. "The program can't start because terra.dll is missing from your computer. Try reinstalling the program to fix this problem." 
+	- Terra is not on your path. Perhaps you didn't add it to your $PATH environment variable, or haven't closed Visual Studio since adding it.
+4. My initial cost is NaN (or infinity) and Opt doesn't improve it.
+	- You may have provided garbage initialization to Opt, see the "Initial Guess" section above.
