@@ -872,7 +872,7 @@ local function problemPlan(id, dimensions, pplan, saveobj)
         opt.math = problemmetadata.kind:match("GPU") and util.gpuMath or util.cpuMath
         opt.problemkind = problemmetadata.kind
         local b = terralib.currenttimeinseconds()
-        local tbl = opt.problemSpecFromFile(problemmetadata.filename)
+        local tbl = opt.problemSpecFromSource(problemmetadata.source)
         assert(ProblemSpec:isclassof(tbl))
         local result, loader = compilePlan(tbl,problemmetadata.kind)
         local e = terralib.currenttimeinseconds()
