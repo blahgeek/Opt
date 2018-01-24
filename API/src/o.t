@@ -518,6 +518,13 @@ function ImageType:terratype()
       return string.format("Image(%s,%s,%d)",tostring(self.scalartype),tostring(self.ispace),channelcount)
     end
 
+    local cardinality = self.ispace:cardinality()
+
+    local cache_op = "ca."
+    if cardinality > 65535 then
+        cache_op = "cg."
+    end
+
     local VT = &vector(scalartype,channelcount)
     -- reads
     if pitched then
@@ -533,6 +540,22 @@ function ImageType:terratype()
                 "tex.1d.v4.f32.s32  {$0,$1,$2,$3}, [$4,{$5}];",
                 "=f,=f,=f,=f,l,r",false, self.tex,idx:tooffset())
             return @[&vectortype](&read)
+        end
+    elseif scalartype == float then
+        terra Image.metamethods.__apply(self : &Image, idx : Index) : vectortype
+            var addr : &scalartype = &self.data[idx:tooffset()].data[0]
+            var ret : vectortype
+            escape
+                for i = 0,channelcount-1 do
+                    emit quote
+                        var e = terralib.asm(float,
+                            ["ld.global." .. cache_op .. "f32 $0, [$1+" .. (i*4) .. "];"],
+                            "=f,l", true, addr)
+                        ret(i) = @[&float](&e)
+                    end
+                end
+            end
+            return ret
         end
     elseif self:LoadAsVector() then
         terra Image.metamethods.__apply(self : &Image, idx : Index) : vectortype
@@ -588,7 +611,6 @@ function ImageType:terratype()
             return lerp(u,b,yn)
         end
     end
-    local cardinality = self.ispace:cardinality()
     terra Image:totalbytes() return sizeof(vectortype)*cardinality end
     if textured then
         local W,H = cardinality,0
