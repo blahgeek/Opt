@@ -74,7 +74,7 @@ local apifunctions = terralib.newlist()
 local apimatch = ("%s_(.*)"):format(libraryname)
 for k,v in pairs(Header) do
     local name = k:match(apimatch)
-    if name and terralib.isfunction(v) and name ~= "NewState" then
+    if name and terralib.isfunction(v) and name ~= "NewState" and name ~= "CloseState" then
         local type = v:gettype()
         apifunctions[name] = {unpack(type.parameters,2)} -> type.returntype
     end
@@ -204,7 +204,14 @@ local terra NewState(params : Opt_InitializationParameters) : &LibraryState
     end
     return S
 end
+
+local terra CloseState(state: &LibraryState)
+    C.lua_close(state.L)
+    C.free(state)
+end
+
 wrappers[libraryname.."_NewState"] =  NewState
+wrappers[libraryname.."_CloseState"] = CloseState
 
 for k,type in pairs(apifunctions) do
     local syms = type.type.parameters:map(symbol)

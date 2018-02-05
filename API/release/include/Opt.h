@@ -30,6 +30,9 @@ typedef struct Opt_InitializationParameters 	Opt_InitializationParameters;
 // Allocate a new independant context for Opt
 Opt_State* Opt_NewState(Opt_InitializationParameters params);
 
+// Close (free) context created by Opt_NewState
+void Opt_CloseState(Opt_State *state);
+
 // load the problem specification including the energy function from 'filename' and
 // initializer a solver of type 'solverkind' (currently only 'gaussNewtonGPU' 
 // and 'LMGPU' are supported)
