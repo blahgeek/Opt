@@ -1,5 +1,7 @@
 local ad = {}
-local C = terralib.includec("math.h")
+local util = require("util")
+local C = util.C
+-- local C = terralib.includec("math.h")
 local A = require("asdl").NewContext()
 require("precision")
 local use_simplify = true
@@ -75,7 +77,7 @@ function Apply:children() return self.args end
 function Reduce:children() return self.args end
 
 function Exp:type() 
-    assert(self.type_ == bool or self.type_ == opt_float) 
+    assert(self.type_ == bool or self.type_ == opt_float or self.type_ == C.cudaTextureObject_t) 
     return self.type_ 
 end
 function Exp:shape()
@@ -91,7 +93,11 @@ function Var:init()
     if type(key) == "table" and type(key.type) == "function" then
         self.type_ = key:type()
     end 
-    assert(self.type_ == opt_float or self.type_ == bool, "variable with key exists with a different type")
+    if type(key) == "table" and terralib.types.istype(key.type) then
+        self.type_ = key.type
+    end
+    assert(self.type_ == opt_float or self.type_ == bool or self.type_ == C.cudaTextureObject_t,
+        "variable with key exists with a different type")
     self.shape_ = ad.scalar
     if type(key) == "table" and type(key.shape) == "function" then
         self.shape_ = key:shape()
@@ -433,9 +439,13 @@ function Op:define(fn,...)
     end
     
     local syms,vars = terralib.newlist(),terralib.newlist()
-    for i = 1,self.nparams do
-        syms:insert(symbol(opt_float))
-        vars:insert(ad.v[i])
+    if self.syms and self.vars then
+        syms, vars = self.syms, self.vars
+    else
+        for i = 1,self.nparams do
+            syms:insert(symbol(opt_float))
+            vars:insert(ad.v[i])
+        end
     end
     local cpropexpression = self(unpack(vars))
     local r = self:generate(cpropexpression,syms)
@@ -841,6 +851,35 @@ end
 ad.powc.hasconst = true
 
 function ad.unm(x) return ad.prod(-1.0,x) end
+
+
+local struct float4 {
+    x: float
+    y: float
+    z: float
+    w: float;
+}
+local terra _tex2d(t: C.cudaTextureObject_t, x : float, y : float) : float
+    var read = terralib.asm(float4,
+        "tex.2d.v4.f32.f32  {$0,$1,$2,$3}, [$4,{$5,$6}];",
+        "=f,=f,=f,=f,l,f,f",false, t, x, y)
+    return read.x
+end
+
+local var_tex = Var(4)
+var_tex.key = function() return 1 end
+var_tex.type_ = C.cudaTextureObject_t
+print('VAR tex:', var_tex)
+
+function ad.tex2d:propagatetype(args) return float, {C.cudaTextureObject_t, float, float} end
+ad.tex2d.syms = List{symbol(C.cudaTextureObject_t), symbol(float), symbol(float)}
+ad.tex2d.vars = List{var_tex, y, z}
+ad.tex2d:define(
+    function(x,y,z) return `_tex2d(x,y,z) end,
+    0,
+    ad.tex2d(var_tex,y,z) - ad.tex2d(var_tex,y-1,z),
+    ad.tex2d(var_tex,y,z) - ad.tex2d(var_tex,y,z-1)
+)
 
 ad.acos:define(function(x) return `C.acos(x) end, -1.0/ad.sqrt(1.0 - x*x))
 ad.acosh:define(function(x) return `C.acosh(x) end, 1.0/ad.sqrt(x*x - 1.0))

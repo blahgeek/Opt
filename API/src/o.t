@@ -1744,7 +1744,8 @@ local function createfunction(problemspec,name,Index,arguments,results,scatters)
                 local n = "d"..tostring(a.dim)
                 return `idx.[n] + a.shift_
             else assert("ParamValue" == a.kind)
-                return `opt_float(P.[a.name])
+                return `[a.type](P.[a.name])
+                -- return `[opt_float](P.[a.name])
             end
         elseif "load" == ir.kind then
             local a = ir.value

@@ -1,7 +1,11 @@
+local util = require("util")
+
 return function(P)
     local terms = terralib.newlist()
 
     local L = {}
+
+    L.C = util.C
 
     function L.Energy(...)
         for i,e in ipairs {...} do
