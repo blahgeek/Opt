@@ -358,7 +358,7 @@ setmetatable(v,{__index = function(self,key)
     return r
 end})
 
-local x,y,z = v[1],v[2],v[3]
+local x,y,z,w = v[1],v[2],v[3],v[4]
 
 ad.v = v
 ad.toexp = toexp
@@ -859,6 +859,7 @@ local struct float4 {
     z: float
     w: float;
 }
+
 local terra _tex2d(t: C.cudaTextureObject_t, x : float, y : float) : float
     var read = terralib.asm(float4,
         "tex.2d.v4.f32.f32  {$0,$1,$2,$3}, [$4,{$5,$6}];",
@@ -866,7 +867,15 @@ local terra _tex2d(t: C.cudaTextureObject_t, x : float, y : float) : float
     return read.x
 end
 
-local var_tex = Var(4)
+local terra _tex3d(t: C.cudaTextureObject_t, x : float, y : float, z : float) : float
+    var _unused : float
+    var read = terralib.asm(float4,
+        "tex.3d.v4.f32.f32  {$0,$1,$2,$3}, [$4,{$5,$6,$7,$8}];",
+        "=f,=f,=f,=f,l,f,f,f,f",false, t, x, y, z, _unused)
+    return read.x
+end
+
+local var_tex = Var(5)
 var_tex.key = function() return 1 end
 var_tex.type_ = C.cudaTextureObject_t
 print('VAR tex:', var_tex)
@@ -879,6 +888,17 @@ ad.tex2d:define(
     0,
     ad.tex2d(var_tex,y,z) - ad.tex2d(var_tex,y-1,z),
     ad.tex2d(var_tex,y,z) - ad.tex2d(var_tex,y,z-1)
+)
+
+function ad.tex3d:propagatetype(args) return float, {C.cudaTextureObject_t, float, float, float} end
+ad.tex3d.syms = List{symbol(C.cudaTextureObject_t), symbol(float), symbol(float), symbol(float)}
+ad.tex3d.vars = List{var_tex, y, z, w}
+ad.tex3d:define(
+    function(x,y,z,w) return `_tex3d(x,y,z,w) end,
+    0,
+    ad.tex3d(var_tex, y, z, w) - ad.tex3d(var_tex, y-1, z, w),
+    ad.tex3d(var_tex, y, z, w) - ad.tex3d(var_tex, y, z-1, w),
+    ad.tex3d(var_tex, y, z, w) - ad.tex3d(var_tex, y, z, w-1)
 )
 
 ad.acos:define(function(x) return `C.acos(x) end, -1.0/ad.sqrt(1.0 - x*x))
